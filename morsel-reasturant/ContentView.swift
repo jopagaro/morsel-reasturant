@@ -1,4 +1,8 @@
 import SwiftUI
+import Auth
+#if canImport(UIKit)
+import UIKit
+#endif
 
 private enum Theme {
     static let primary = Color.accentColor
@@ -22,17 +26,44 @@ struct ContentView: View {
         ZStack {
             Theme.brandGradient.ignoresSafeArea()
             TabView {
-                OrdersView()
-                    .tabItem { Label("Orders", systemImage: "cart") }
+                NavigationStack {
+                    VStack(spacing: 16) {
+                        // Empty state card for Orders
+                        HStack(alignment: .top, spacing: 12) {
+                            Image(systemName: "cart")
+                                .font(.title2)
+                                .foregroundStyle(Theme.blue)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("No orders yet")
+                                    .font(.headline)
+                                Text("When customers place orders, they’ll show up here.")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                        }
+                        .padding()
+                        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .strokeBorder(Color.primary.opacity(0.06))
+                        )
+                        .shadow(color: Color.black.opacity(0.06), radius: 12, x: 0, y: 8)
+                        .padding(.horizontal)
+
+                        Spacer()
+                    }
+                    .navigationTitle("Orders")
+                    .toolbarBackground(.visible, for: .navigationBar)
+                    .toolbarBackground(Color(.systemGroupedBackground), for: .navigationBar)
+                }
+                .tabItem { Label("Orders", systemImage: "cart") }
 
                 ListingView()
                     .tabItem { Label("Listing", systemImage: "square.and.pencil") }
 
                 ProfileView()
                     .tabItem { Label("Profile", systemImage: "person") }
-
-                MenuView()
-                    .tabItem { Label("Menu", systemImage: "fork.knife") }
             }
             .background(.clear)
             .tint(Theme.blue)
@@ -56,6 +87,9 @@ struct ListingView: View {
     @State private var pickupLocation: String = "123 Market St, Side Entrance"
     
     @State private var dietaryTags: Set<String> = []
+    @State private var isPublishing: Bool = false
+    @State private var showPublishAlert: Bool = false
+    @State private var publishAlertMessage: String = ""
     private let tagOptions: [String] = [
         // Dietary patterns
         "Vegan", "Vegetarian", "Pescatarian", "Keto", "Paleo", "Low Carb", "Low Fat", "High Protein",
@@ -187,14 +221,21 @@ struct ListingView: View {
                         }
                         Spacer()
                         Button {
-                            // TODO: validate and publish listing
+                            Task { await publishCurrentListing() }
                         } label: {
-                            Text("Publish")
-                                .fontWeight(.semibold)
-                                .frame(maxWidth: 180)
+                            HStack(spacing: 8) {
+                                if isPublishing {
+                                    ProgressView()
+                                        .progressViewStyle(.circular)
+                                }
+                                Text(isPublishing ? "Publishing…" : "Publish")
+                                    .fontWeight(.semibold)
+                                    .frame(maxWidth: 180)
+                            }
                         }
                         .buttonStyle(.borderedProminent)
                         .tint(Theme.blue)
+                        .disabled(isPublishing)
                     }
                     .padding(.horizontal)
                     .padding(.vertical, 10)
@@ -204,8 +245,76 @@ struct ListingView: View {
                 }
                 .padding(.horizontal)
                 .padding(.top, 8)
+                .alert("Publish", isPresented: $showPublishAlert, actions: { Button("OK", role: .cancel) {} }, message: { Text(publishAlertMessage) })
             }
         }
+    }
+
+    @MainActor
+    private func publishCurrentListing() async {
+        isPublishing = true
+        publishAlertMessage = ""
+        guard
+            let restaurantUUID = UUID(uuidString: UserDefaults.standard.string(forKey: "restaurantId") ?? ""),
+            let locationUUID = UUID(uuidString: UserDefaults.standard.string(forKey: "locationId") ?? "")
+        else {
+            publishAlertMessage = "Please create a restaurant and location in Profile before publishing."
+            showPublishAlert = true
+            isPublishing = false
+            return
+        }
+        let restaurantId = restaurantUUID
+        let locationId = locationUUID
+
+        do {
+            let basePrice = Double(price) ?? 0
+            let item = try await createItem(
+                restaurantId: restaurantId,
+                title: title.isEmpty ? "Untitled Item" : title,
+                description: nil,
+                basePrice: basePrice
+            )
+
+            if let itemId = item.id {
+                try await attachTags(to: itemId, names: dietaryTags)
+
+                let _ = try await createListing(
+                    itemId: itemId,
+                    locationId: locationId,
+                    titleOverride: nil,
+                    price: Double(price) ?? 0,
+                    quantity: quantity,
+                    availableNow: pickupAvailableNow,
+                    startAt: pickupAvailableNow ? nil : pickupStart,
+                    endAt: pickupAvailableNow ? nil : pickupEnd,
+                    leadTimeMinutes: leadTimeMinutes,
+                    sellUntilEnd: sellUntilEndTime,
+                    pickupInstructions: pickupInstructions
+                )
+
+                print("Listing published successfully")
+                publishAlertMessage = "Your listing was published successfully."
+                #if canImport(UIKit)
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                #endif
+                showPublishAlert = true
+            } else {
+                print("Failed to obtain created item ID")
+                publishAlertMessage = "We couldn't obtain the created item ID. Please try again."
+                #if canImport(UIKit)
+                UINotificationFeedbackGenerator().notificationOccurred(.error)
+                #endif
+                showPublishAlert = true
+            }
+        } catch {
+            print("Publish failed: \(error.localizedDescription)")
+            publishAlertMessage = "Publish failed: \(error.localizedDescription)"
+            #if canImport(UIKit)
+            UINotificationFeedbackGenerator().notificationOccurred(.error)
+            #endif
+            showPublishAlert = true
+        }
+        isPublishing = false
     }
 }
 
@@ -236,275 +345,265 @@ struct ActiveListingsView: View {
     }
 }
 
-// MARK: - Orders (unchanged core, prioritized tab position)
+// MARK: - Temporary backend stubs (replace with real implementations)
+struct CreatedRestaurantResult { let id: UUID }
+struct CreatedLocationResult { let id: UUID }
 
-struct OrdersView: View {
-    struct Order: Identifiable {
-        let id: UUID
-        let number: String
-        let customer: String
-        let total: String
-        let placedAt: Date
-        let status: String
-    }
-
-    @State private var orders: [Order] = [] // No fake orders by default
-    @State private var isRefreshing: Bool = false
-
-    private func refresh() async {
-        await MainActor.run { isRefreshing = true }
-        // TODO: hook up to real data fetch
-        try? await Task.sleep(nanoseconds: 1_000_000_000)
-        await MainActor.run { isRefreshing = false }
-    }
-
-    var body: some View {
-        NavigationStack {
-            ZStack {
-                Color(.systemGroupedBackground).ignoresSafeArea()
-                if orders.isEmpty {
-                    VStack {
-                        Spacer(minLength: 0)
-                        emptyState
-                        Spacer(minLength: 0)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    ordersList
-                }
-            }
-            .refreshable { await refresh() }
-            .overlay(alignment: .top) {
-                if isRefreshing {
-                    Text("Refreshing…")
-                        .font(.caption)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(.ultraThinMaterial, in: Capsule())
-                        .overlay(Capsule().strokeBorder(Color.primary.opacity(0.08)))
-                        .padding(.top, 8)
-                }
-            }
-            .navigationTitle("Orders")
-            .toolbarBackground(.visible, for: .navigationBar)
-            .toolbarBackground(Color(.systemGroupedBackground), for: .navigationBar)
-            .background(Color(.systemGroupedBackground))
-        }
-    }
-
-    private var emptyState: some View {
-        VStack(spacing: 16) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .fill(LinearGradient(colors: [Theme.blue.opacity(0.28), Theme.green.opacity(0.28)], startPoint: .topLeading, endPoint: .bottomTrailing))
-                RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .strokeBorder(Color.white.opacity(0.25))
-            }
-            .frame(height: 180)
-            .overlay(
-                Image(systemName: "cart")
-                    .font(.system(size: 56, weight: .semibold))
-                    .foregroundStyle(.white)
-            )
-
-            VStack(spacing: 6) {
-                Text("No orders yet")
-                    .font(.title2).bold()
-                Text("When an order is received, you’ll be notified here.")
-                    .multilineTextAlignment(.center)
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.horizontal)
-        }
-        .padding(.vertical, 16)
-        .padding(.horizontal) // system default horizontal padding
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(.thinMaterial)
-                .shadow(color: Color.black.opacity(0.04), radius: 12, x: 0, y: 6)
-        )
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Color.primary.opacity(0.06)))
-        .frame(maxWidth: .infinity, alignment: .center)
-        .padding(.horizontal) // bring card closer to edges
-        .background(Color(.systemGroupedBackground))
-    }
-
-    private var ordersList: some View {
-        List {
-            Section("Incoming") {
-                ForEach(orders) { order in
-                    NavigationLink(
-                        destination: Text("Order details for #\(order.number) (placeholder)"),
-                        label: { OrderRow(order: order) }
-                    )
-                    .listRowBackground(Color.clear)
-                }
-            }
-        }
-        .listStyle(.insetGrouped)
-        .scrollContentBackground(.hidden)
-        .background(Color(.systemGroupedBackground))
-        .headerProminence(.increased)
-    }
+@discardableResult
+func createRestaurant(name: String, address: String?) async throws -> CreatedRestaurantResult {
+    // TODO: Replace with real network/database call
+    try await Task.sleep(nanoseconds: 200_000_000) // simulate latency
+    return CreatedRestaurantResult(id: UUID())
 }
 
-private struct OrderRow: View {
-    let order: OrdersView.Order
+@discardableResult
+func createLocation(restaurantId: UUID, address: String?) async throws -> CreatedLocationResult {
+    // TODO: Replace with real network/database call
+    try await Task.sleep(nanoseconds: 200_000_000) // simulate latency
+    return CreatedLocationResult(id: UUID())
+}
 
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(LinearGradient(colors: [Theme.blue.opacity(0.55), Theme.green.opacity(0.55)], startPoint: .topLeading, endPoint: .bottomTrailing))
-                Image(systemName: "shippingbox")
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(.white)
-            }
-            .frame(width: 48, height: 48)
-
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text("#\(order.number)")
-                        .font(.headline)
-                    Spacer()
-                    Text(order.total)
-                        .font(.headline)
-                }
-                HStack(spacing: 6) {
-                    Text(order.customer)
-                    Text("•")
-                    Text(order.status)
-                }
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-            }
-        }
-        .padding(8)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(.regularMaterial)
-        )
-        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.primary.opacity(0.06)))
-    }
+func linkRestaurantToCurrentUser(restaurantId: UUID) async throws {
+    // TODO: Replace with real link logic (e.g., update profiles with restaurant_id)
+    try await Task.sleep(nanoseconds: 150_000_000)
 }
 
 // MARK: - Profile (unchanged)
 
 struct ProfileView: View {
+    @State private var email: String = ""
+    @State private var password: String = ""
+    @State private var status: String = ""
+    @State private var isSignedIn: Bool = false
+    @State private var userEmail: String = ""
+    @State private var restaurantName: String = ""
+    @State private var restaurantAddress: String = ""
+    @State private var isCreatingRestaurant: Bool = false
+    @State private var showRestaurantAlert: Bool = false
+    @State private var restaurantAlertMessage: String = ""
+    @AppStorage("restaurantId") private var storedRestaurantId: String = ""
+    @AppStorage("locationId") private var storedLocationId: String = ""
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 16) {
-                Image(systemName: "person.crop.circle.fill")
-                    .font(.system(size: 72))
-                Text("Restaurant Admin")
-                    .font(.title2).bold()
-                Text("Sign in to sync menu, orders, and reservations across devices.")
-                    .multilineTextAlignment(.center)
-                    .foregroundStyle(.secondary)
+                if isSignedIn {
+                    Image(systemName: "person.crop.circle.badge.checkmark")
+                        .font(.system(size: 72))
+                    Text("Signed in as")
+                        .font(.headline)
+                    Text(userEmail)
+                        .foregroundStyle(.secondary)
 
-                HStack {
-                    Button("Sign In") {}
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Your Restaurant")
+                            .font(.headline)
+                        TextField("Restaurant name", text: $restaurantName)
+                            .padding()
+                            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+                        TextField("Restaurant address / location", text: $restaurantAddress)
+                            .textContentType(.fullStreetAddress)
+                            .padding()
+                            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+                        Button {
+                            Task { await createRestaurantForProfile() }
+                        } label: {
+                            HStack(spacing: 8) {
+                                if isCreatingRestaurant { ProgressView() }
+                                Text(isCreatingRestaurant ? "Saving…" : "Create Restaurant")
+                                    .fontWeight(.semibold)
+                            }
+                        }
                         .buttonStyle(.borderedProminent)
-                    Button("Create Account") {}
+                        .disabled(isCreatingRestaurant || restaurantName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                    .padding(.top, 8)
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Your Location")
+                            .font(.headline)
+                        TextField("Location address (e.g., 123 Market St)", text: $restaurantAddress)
+                            .textContentType(.fullStreetAddress)
+                            .padding()
+                            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+                        Button {
+                            Task {
+                                await createOrUpdateLocation()
+                            }
+                        } label: {
+                            Text("Save Location")
+                                .fontWeight(.semibold)
+                        }
                         .buttonStyle(.bordered)
+                        .disabled(storedRestaurantId.isEmpty)
+                        if storedRestaurantId.isEmpty {
+                            Text("Create your restaurant first to add a location.")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    Button("Sign Out") {
+                        Task {
+                            do {
+                                try await signOut()
+                                await MainActor.run {
+                                    isSignedIn = false
+                                    userEmail = ""
+                                    status = "Signed out"
+                                }
+                            } catch {
+                                await MainActor.run { status = "Sign out failed: \(error.localizedDescription)" }
+                            }
+                        }
+                    }
+                    .buttonStyle(.bordered)
+
+                } else {
+                    Image(systemName: "person.crop.circle.fill")
+                        .font(.system(size: 72))
+                    Text("Restaurant Admin")
+                        .font(.title2).bold()
+                    Text("Sign in to sync menu, orders, and reservations across devices.")
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(.secondary)
+
+                    TextField("Email", text: $email)
+                        .textContentType(.emailAddress)
+                        .keyboardType(.emailAddress)
+                        .autocapitalization(.none)
+                        .textInputAutocapitalization(.never)
+                        .disableAutocorrection(true)
+                        .padding()
+                        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+
+                    SecureField("Password", text: $password)
+                        .textContentType(.password)
+                        .padding()
+                        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+
+                    HStack {
+                        Button("Sign Up") {
+                            Task {
+                                do {
+                                    try await signUp(email: email, password: password)
+                                    try await postAuthSetup(email: email)
+                                    await refreshAuthState()
+                                    await MainActor.run { status = "Sign up success" }
+                                } catch {
+                                    await MainActor.run { status = "Sign up failed: \(error.localizedDescription)" }
+                                }
+                            }
+                        }
+                        .buttonStyle(.bordered)
+
+                        Button("Sign In") {
+                            Task {
+                                do {
+                                    try await signIn(email: email, password: password)
+                                    try await postAuthSetup(email: email)
+                                    await refreshAuthState()
+                                    await MainActor.run { status = "Sign in success" }
+                                } catch {
+                                    await MainActor.run { status = "Sign in failed: \(error.localizedDescription)" }
+                                }
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                }
+
+                if !status.isEmpty {
+                    Text(status)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
             }
-            .padding()
-            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Color.primary.opacity(0.06)))
-            .shadow(color: Color.black.opacity(0.06), radius: 14, x: 0, y: 8)
             .padding()
             .navigationTitle("Profile")
             .tint(Theme.blue)
             .toolbarBackground(.visible, for: .navigationBar)
             .toolbarBackground(Color(.systemGroupedBackground), for: .navigationBar)
+            .task {
+                await refreshAuthState()
+            }
+            .alert("Restaurant", isPresented: $showRestaurantAlert, actions: { Button("OK", role: .cancel) {} }, message: { Text(restaurantAlertMessage) })
         }
     }
-}
 
-// MARK: - De-emphasized Menu (set menu vs giveaways)
-
-struct MenuView: View {
-    @State private var selection: MenuSection = .giveaways
-
-    enum MenuSection: String, CaseIterable, Identifiable { case setMenu = "Set Menu", giveaways = "Giveaways"; var id: String { rawValue } }
-
-    var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                Picker("Section", selection: $selection) {
-                    ForEach(MenuSection.allCases) { sec in
-                        Text(sec.rawValue).tag(sec)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .padding(12)
-                .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Color.primary.opacity(0.06)))
-                .shadow(color: Color.black.opacity(0.04), radius: 12, x: 0, y: 6)
-
-                Group {
-                    switch selection {
-                    case .setMenu:
-                        SetMenuList()
-                    case .giveaways:
-                        GiveawaysList()
-                    }
-                }
-            }
-            .navigationTitle("Menu")
-            .tint(Theme.blue)
-            .toolbarBackground(.visible, for: .navigationBar)
-            .toolbarBackground(Color(.systemGroupedBackground), for: .navigationBar)
+    private func postAuthSetup(email: String) async throws {
+        do {
+            _ = try await upsertProfileIfNeeded(email: email, displayName: nil)
+        } catch {
+            throw error
         }
     }
-}
 
-struct SetMenuList: View {
-    var body: some View {
-        List {
-            Section("Set Menu") {
-                ForEach(0..<5) { idx in
-                    HStack {
-                        Image(systemName: "fork.knife.circle")
-                        VStack(alignment: .leading) {
-                            Text("Menu Item #\(idx + 1)")
-                            Text("Always available").font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                    .listRowBackground(Color.clear)
-                }
+    @MainActor
+    private func refreshAuthState() async {
+        do {
+            let maybeUser = try await currentUser()
+            if let user = maybeUser as? (any AnyObject) { _ = user } // no-op to silence unused
+            if let user = try await currentUser() { // treat as optional per helper
+                isSignedIn = true
+                userEmail = user.email ?? ""
+            } else {
+                isSignedIn = false
+                userEmail = ""
             }
-            Section("Actions") {
-                Button("Manage set menu") {}
-            }
+        } catch {
+            isSignedIn = false
+            userEmail = ""
+            status = "Auth check failed: \(error.localizedDescription)"
         }
-        .listStyle(.insetGrouped)
-        .scrollContentBackground(.hidden)
-        .background(Color(.systemGroupedBackground))
-        .headerProminence(.increased)
-        .tint(Theme.blue)
     }
-}
 
-struct GiveawaysList: View {
-    var body: some View {
-        List {
-            Section("Available Now") {
-                ForEach(0..<3) { idx in
-                    NavigationLink("Giveaway #\(idx + 1)", destination: Text("Giveaway details (placeholder)"))
-                        .listRowBackground(Color.clear)
-                }
-            }
-            Section("Actions") {
-                Button("Upload giveaway") {}
-            }
+    @MainActor
+    private func createRestaurantForProfile() async {
+        guard !restaurantName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        isCreatingRestaurant = true
+        restaurantAlertMessage = ""
+        do {
+            let result = try await createRestaurant(name: restaurantName, address: restaurantAddress.isEmpty ? nil : restaurantAddress)
+            let id = result.id
+            try await linkRestaurantToCurrentUser(restaurantId: id)
+            storedRestaurantId = id.uuidString
+            restaurantAlertMessage = "Restaurant created and linked to your profile."
+            #if canImport(UIKit)
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            #endif
+            showRestaurantAlert = true
+            // Optionally clear inputs
+            // Keep address so user can reuse it for location
+            restaurantName = ""
+        } catch {
+            restaurantAlertMessage = "Failed to create restaurant: \(error.localizedDescription)"
+            #if canImport(UIKit)
+            UINotificationFeedbackGenerator().notificationOccurred(.error)
+            #endif
+            showRestaurantAlert = true
         }
-        .listStyle(.insetGrouped)
-        .scrollContentBackground(.hidden)
-        .background(Color(.systemGroupedBackground))
-        .headerProminence(.increased)
-        .tint(Theme.blue)
+        isCreatingRestaurant = false
+    }
+
+    @MainActor
+    private func createOrUpdateLocation() async {
+        guard let restaurantUUID = UUID(uuidString: storedRestaurantId) else { return }
+        do {
+            let location = try await createLocation(restaurantId: restaurantUUID, address: restaurantAddress.isEmpty ? nil : restaurantAddress)
+            storedLocationId = location.id.uuidString
+            restaurantAlertMessage = "Location saved for your restaurant."
+            #if canImport(UIKit)
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            #endif
+            showRestaurantAlert = true
+        } catch {
+            restaurantAlertMessage = "Failed to save location: \(error.localizedDescription)"
+            #if canImport(UIKit)
+            UINotificationFeedbackGenerator().notificationOccurred(.error)
+            #endif
+            showRestaurantAlert = true
+        }
     }
 }
 
@@ -568,3 +667,4 @@ private extension View {
 #Preview {
     ContentView()
 }
+
