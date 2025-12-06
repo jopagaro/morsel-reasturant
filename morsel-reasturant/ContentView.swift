@@ -383,9 +383,10 @@ struct ProfileView: View {
     @State private var restaurantAlertMessage: String = ""
     @AppStorage("restaurantId") private var storedRestaurantId: String = ""
     @AppStorage("locationId") private var storedLocationId: String = ""
+    @State private var navPath = NavigationPath()
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $navPath) {
             VStack(spacing: 16) {
                 if isSignedIn {
                     Image(systemName: "person.crop.circle.badge.checkmark")
@@ -395,51 +396,74 @@ struct ProfileView: View {
                     Text(userEmail)
                         .foregroundStyle(.secondary)
 
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Your Restaurant")
-                            .font(.headline)
-                        TextField("Restaurant name", text: $restaurantName)
-                            .padding()
-                            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
-                        TextField("Restaurant address / location", text: $restaurantAddress)
-                            .textContentType(.fullStreetAddress)
-                            .padding()
-                            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
-                        Button {
-                            Task { await createRestaurantForProfile() }
-                        } label: {
-                            HStack(spacing: 8) {
-                                if isCreatingRestaurant { ProgressView() }
-                                Text(isCreatingRestaurant ? "Saving…" : "Create Restaurant")
-                                    .fontWeight(.semibold)
+                    VStack {
+                        if !storedRestaurantId.isEmpty {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("Your Restaurant")
+                                    .font(.caption)
+                                    .fontWeight(.medium)
+                                    .foregroundStyle(.secondary)
+                                    .padding(.horizontal, 2)
+                                HStack(alignment: .top, spacing: 8) {
+                                    Image(systemName: "building.2.crop.circle")
+                                        .font(.headline)
+                                        .foregroundStyle(Theme.blue)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(restaurantName.isEmpty ? "Restaurant" : restaurantName)
+                                            .font(.subheadline)
+                                            .fontWeight(.semibold)
+                                        if !restaurantAddress.isEmpty {
+                                            Text(restaurantAddress)
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        if !storedLocationId.isEmpty {
+                                            Text("Location saved")
+                                                .font(.caption2)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
+                                    Spacer()
+                                }
+                                .padding(12)
+                                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.primary.opacity(0.06)))
+                                .shadow(color: Color.black.opacity(0.04), radius: 8, x: 0, y: 4)
                             }
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(isCreatingRestaurant || restaurantName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    }
-                    .padding(.top, 8)
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Your Location")
-                            .font(.headline)
-                        TextField("Location address (e.g., 123 Market St)", text: $restaurantAddress)
-                            .textContentType(.fullStreetAddress)
-                            .padding()
-                            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
-                        Button {
-                            Task {
-                                await createOrUpdateLocation()
+                        } else {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("Profile Setup")
+                                    .font(.caption)
+                                    .fontWeight(.medium)
+                                    .foregroundStyle(.secondary)
+                                    .padding(.horizontal, 2)
+                                Button {
+                                    navPath.append("restaurantForm")
+                                } label: {
+                                    HStack(spacing: 8) {
+                                        Image(systemName: "plus.circle.fill")
+                                            .font(.headline)
+                                            .foregroundStyle(Theme.blue)
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text("Add Restaurant")
+                                                .font(.subheadline)
+                                                .fontWeight(.semibold)
+                                            Text("Create your restaurant to start listing items.")
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        Spacer()
+                                        Image(systemName: "chevron.right")
+                                            .font(.caption)
+                                            .foregroundStyle(.tertiary)
+                                    }
+                                    .padding(12)
+                                    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.primary.opacity(0.06)))
+                                    .shadow(color: Color.black.opacity(0.04), radius: 8, x: 0, y: 4)
+                                }
+                                .buttonStyle(.plain)
                             }
-                        } label: {
-                            Text("Save Location")
-                                .fontWeight(.semibold)
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(storedRestaurantId.isEmpty)
-                        if storedRestaurantId.isEmpty {
-                            Text("Create your restaurant first to add a location.")
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
                         }
                     }
 
@@ -528,6 +552,16 @@ struct ProfileView: View {
                 await refreshAuthState()
             }
             .alert("Restaurant", isPresented: $showRestaurantAlert, actions: { Button("OK", role: .cancel) {} }, message: { Text(restaurantAlertMessage) })
+            .navigationDestination(for: String.self) { route in
+                if route == "restaurantForm" {
+                    RestaurantFormView(onSaved: { name, address, restaurantId, locationId in
+                        restaurantName = name
+                        restaurantAddress = address
+                        storedRestaurantId = restaurantId.uuidString
+                        if let locId = locationId { storedLocationId = locId.uuidString }
+                    })
+                }
+            }
         }
     }
 
@@ -607,6 +641,67 @@ struct ProfileView: View {
     }
 }
 
+struct RestaurantFormView: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var name: String = ""
+    @State private var address: String = ""
+    @State private var isSaving: Bool = false
+    let onSaved: (String, String, UUID, UUID?) -> Void
+
+    var body: some View {
+        Form {
+            Section("Restaurant") {
+                TextField("Name", text: $name)
+                TextField("Address (optional)", text: $address)
+                    .textContentType(.fullStreetAddress)
+            }
+            Section {
+                Button {
+                    Task { await save() }
+                } label: {
+                    HStack(spacing: 8) {
+                        if isSaving { ProgressView() }
+                        Text(isSaving ? "Saving…" : "Save")
+                            .fontWeight(.semibold)
+                    }
+                }
+                .disabled(isSaving || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .navigationTitle("New Restaurant")
+        .toolbarBackground(.visible, for: .navigationBar)
+        .toolbarBackground(Color(.systemGroupedBackground), for: .navigationBar)
+    }
+
+    @MainActor
+    private func save() async {
+        guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        isSaving = true
+        do {
+            let result = try await createRestaurant(name: name, address: address.isEmpty ? nil : address)
+            let restaurantId = result.id
+            try await linkRestaurantToCurrentUser(restaurantId: restaurantId)
+            var savedLocationId: UUID? = nil
+            // Optionally create a default location using the same address if provided
+            if !address.isEmpty {
+                let location = try await createLocation(restaurantId: restaurantId, address: address)
+                savedLocationId = location.id
+            }
+            onSaved(name, address, restaurantId, savedLocationId)
+            #if canImport(UIKit)
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            #endif
+            dismiss()
+        } catch {
+            #if canImport(UIKit)
+            UINotificationFeedbackGenerator().notificationOccurred(.error)
+            #endif
+            // You can add an alert here if desired
+        }
+        isSaving = false
+    }
+}
+
 struct FlowLayout<Data: RandomAccessCollection, Content: View>: View where Data.Element: Hashable {
     let items: Data
     let spacing: CGFloat
@@ -667,4 +762,3 @@ private extension View {
 #Preview {
     ContentView()
 }
-
